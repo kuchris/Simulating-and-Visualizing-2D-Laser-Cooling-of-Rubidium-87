@@ -27,8 +27,13 @@ from . import constants as c
 from .parameters import MOTParameters
 
 
-def scattering_rates(positions: np.ndarray, velocities: np.ndarray, p: MOTParameters) -> np.ndarray:
-    """Photon scattering rate [1/s] from each beam, shape (n_atoms, n_beams)."""
+def scattering_rates(positions: np.ndarray, velocities: np.ndarray, p: MOTParameters,
+                     transmission: np.ndarray | None = None) -> np.ndarray:
+    """Photon scattering rate [1/s] from each beam, shape (n_atoms, n_beams).
+
+    `transmission` (same shape) is the fraction of each beam left after the
+    atoms upstream have absorbed from it; by default the cloud is transparent.
+    """
     directions = p.beam_directions
     r_along = positions @ directions.T
     v_along = velocities @ directions.T
@@ -36,9 +41,16 @@ def scattering_rates(positions: np.ndarray, velocities: np.ndarray, p: MOTParame
     r_perp_sq = np.sum(positions**2, axis=1, keepdims=True) - r_along**2
 
     s = p.saturation * p.beam_powers * np.exp(-2 * r_perp_sq / p.beam_waist**2)
+    if transmission is not None:
+        s = s * transmission
     s_total = s.sum(axis=1, keepdims=True)
     delta_eff = p.delta - c.WAVENUMBER * v_along - zeeman
 
+    return lorentzian_rates(s, s_total, delta_eff)
+
+
+def lorentzian_rates(s: np.ndarray, s_total: np.ndarray, delta_eff: np.ndarray) -> np.ndarray:
+    """Two-level scattering rate (Γ/2) s / (1 + s_tot + (2δ/Γ)²) [1/s], element by element."""
     return 0.5 * c.GAMMA * s / (1 + s_total + (2 * delta_eff / c.GAMMA) ** 2)
 
 
@@ -55,13 +67,19 @@ def photon_kicks(rates: np.ndarray, dt: float, p: MOTParameters, rng: np.random.
     which gives a second kick (in 2D only its in-plane part matters). Both are
     random, so this one function produces the friction, the trap and the heating.
     """
-    n_atoms = rates.shape[0]
-    n_absorbed = rng.poisson(rates * dt)
-    kick = n_absorbed @ p.beam_directions
+    return recoil_kicks(rng.poisson(rates * dt), p.beam_directions, rng)
 
-    n_emitted = n_absorbed.sum(axis=1)
-    emitter = np.repeat(np.arange(n_atoms), n_emitted)
-    for axis, component in enumerate(_isotropic_unit_vectors(emitter.size, rng)[: p.dimensions]):
+
+def recoil_kicks(n_absorbed: np.ndarray, directions: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """Velocity change [m/s] from n_absorbed[i, j] photons taken from beam j and re-emitted isotropically.
+
+    `directions` has shape (n_beams, D); only the first D components of each emission are kept.
+    """
+    n_atoms, dims = n_absorbed.shape[0], directions.shape[1]
+    kick = n_absorbed @ directions
+
+    emitter = np.repeat(np.arange(n_atoms), n_absorbed.sum(axis=1))
+    for axis, component in enumerate(_isotropic_unit_vectors(emitter.size, rng)[:dims]):
         kick[:, axis] += np.bincount(emitter, component, minlength=n_atoms)
 
     return c.RECOIL_VELOCITY * kick
