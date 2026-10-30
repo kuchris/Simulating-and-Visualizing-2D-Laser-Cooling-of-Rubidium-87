@@ -85,7 +85,7 @@ def _distinct_axes(p: MOTParameters) -> list[int]:
 
 def _axis_label(p: MOTParameters, axis: int) -> str:
     if p.dimensions == 2:
-        return AXIS_NAMES[axis]
+        return {0: "x, y", 1: "y"}[axis]
     return {0: "x, y (radial)", 1: "y", 2: "z (axial)"}[axis]
 
 

@@ -159,7 +159,7 @@ Each point is the steady state of a separate simulation; the lines are the analy
 `python main.py --dimensions 2` runs the same physics with four beams in the x–y plane. A 2D MOT
 cools and traps transversely and leaves z free; it is commonly used as a source to load a 3D MOT.
 With the default parameters, theory gives 288 µK and 155 µm, and the simulation gives
-RESULT_2D.
+285 µK and 292 µK along x and y, and 153 µm and 157 µm.
 
 | | |
 |---|---|
