@@ -2,3 +2,4 @@ numpy>=1.24
 matplotlib>=3.7
 pillow
 pytest
+numba>=0.60  # optional: compiles the inner loop (the code falls back to NumPy without it)

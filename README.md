@@ -18,14 +18,31 @@ real setup (unequal beams, stray fields, gravity, a reversed coil).
 
 ```bash
 pip install -r requirements.txt
-python main.py                      # 3D MOT, all figures (about 10 min)
+python main.py                      # 3D MOT, all figures (about 2 min)
 python main.py --dimensions 2       # 2D MOT
-python main.py --quick              # main simulation only (about 30 s)
+python main.py --quick              # main simulation only (about 4 s)
 python main.py --help               # detuning, intensity, gradient, atoms, ...
-python -m pytest                    # physics checks (20 tests)
+python extensions.py                # capture, repumper, density limit, 2D-MOT source, molasses (about 3 min)
+python extensions.py --quick        # the same with fewer atoms (about 1 min)
+python -m pytest                    # physics checks (39 tests)
 ```
 
-Figures are written to `figures/3d/` and `figures/2d/`.
+Figures are written to `figures/3d/`, `figures/2d/` and `figures/extensions/`.
+Times are for an Apple M2 (4 performance + 4 efficiency cores).
+
+### Speed
+
+Two things make the simulation fast; neither changes the physics.
+
+- **Compiled inner loop** (`mot/fast.py`). With [Numba](https://numba.pydata.org) installed, the
+  photon-by-photon loop runs as compiled code, one atom per thread, many time steps per call. Each
+  atom draws from its own random stream, so a run gives the same result on any number of threads.
+  Without Numba, or with `MOT_NUMBA=0`, the same loop runs in NumPy.
+- **Parallel scans** (`mot/parallel.py`). Each point of a parameter scan is a separate
+  simulation, and scans run one per CPU core. `MOT_PROCESSES=1` runs them one after another.
+
+Numba draws different random numbers from NumPy, so the results agree statistically, not digit for
+digit. The tests pass both ways.
 
 ## The physical model
 
@@ -165,24 +182,119 @@ With the default parameters, theory gives 288 µK and 155 µm, and the simulatio
 |---|---|
 | ![2D dynamics](figures/2d/cooling_dynamics.png) | ![2D animation](figures/2d/mot_animation.gif) |
 
+## Beyond the basic model (`extensions.py`)
+
+Five studies add physics that the main simulation leaves out. Each one keeps the photon-by-photon
+approach where it can and is checked against its own analytic limit (`tests/test_extensions.py`).
+
+### Capture velocity and loading rate (`mot/capture.py`)
+
+A vapour-cell MOT is filled from the room-temperature gas. Only atoms slower than the **capture
+velocity** $v_c$ are stopped inside the beams, and their share of the flux grows as
+$v_c^4$: $\Phi(v<v_c) = \Phi_\text{tot}\,F(v_c/v_p)$, with $F(x) = 1-(1+x^2)e^{-x^2} \approx x^4/2$.
+
+- **Head-on capture.** Atoms launched at the centre are captured up to $v_c$ = 19 m/s at
+  δ = −2Γ. Photon noise barely moves this threshold.
+- **Loading from the vapour.** The simulation only follows the slow tail of the vapour, entering a
+  sphere of 10 mm from all directions with the effusive cos θ law, and reweights it. Most atoms
+  arrive off-axis and see less light than a head-on atom, so the loading rate (1.7 × 10⁸ atoms/s
+  at 10⁹ cm⁻³) is below the textbook estimate $\tfrac12 n V^{2/3} v_c^4 (m/2k_BT)^{3/2}$.
+- **Detuning.** A larger |δ| raises the head-on $v_c$, but beyond about −3Γ the slowed atoms need
+  more room than the beams give them, and the loading rate falls.
+
+![Capture](figures/extensions/capture.png)
+
+### Repumper (`mot/repumper.py`)
+
+The cooling light also excites F′=2 and F′=1 off resonance; from there an atom can fall to F=1,
+which is dark. With the relative hyperfine strengths and branching ratios from Steck, the leak
+probability is $p_\text{leak}$ = 5.7 × 10⁻⁴ per photon at δ = −2Γ: without a repumper the MOT goes
+dark in 0.6 ms. A repumper returns atoms at $\gamma_\text{rep} = (\Gamma/4)\,s/(1+s)$, and the
+bright fraction is $f = \gamma_\text{rep}/(\gamma_\text{rep}+\gamma_\text{leak})$.
+
+A dark atom feels neither friction, heating nor trap. When atoms switch quickly, all three are scaled
+by $f$: the temperature stays at the Doppler value, but the weaker trap lets the cloud grow as
+$1/\sqrt f$.
+
+![Repumper](figures/extensions/repumper.png)
+
+### Many atoms: the density limit (`mot/density.py`)
+
+Two mean-field forces act in a large cloud (Walker, Sesko & Wieman 1990):
+
+- **Shadowing.** Atoms upstream absorb part of each beam, which pushes the cloud inwards.
+- **Rescattering.** Photons scattered by one atom are absorbed by another. This pushes them apart
+  with a force that falls as 1/r², like a Coulomb force.
+
+Their sum has divergence $\nabla\cdot\mathbf F = 6\hbar k R\,n(\sigma_R-\sigma_L)$. Once it outweighs
+the trap, the density saturates at $n_\text{max} = \sum_i\kappa_i / 6\hbar k R(\sigma_R-\sigma_L)$
+(2.8 × 10¹⁰ cm⁻³ for σ_R/σ_L = 1.3), and the cloud grows as $N^{1/3}$. Each simulated atom stands for
+many real ones; both forces come from the density on a grid. The shadows follow from column
+densities along each beam, and the rescattering force from an FFT convolution with the 1/r² law.
+
+- The simulated central density levels off at $n_\text{max}$, and the size follows the uniform
+  spheroid that theory predicts.
+- The rescattering force on its own is conservative and leaves the temperature at the Doppler value.
+  The shadow force is not conservative (its curl is not zero in a non-uniform cloud). With friction,
+  it drives circulating flows, and the kinetic temperature of very large clouds rises.
+- Light-assisted collisions ($\beta n^2$ loss) matter only at low vapour density, where the
+  background collisions that otherwise limit the atom number are rare.
+
+![Density limit](figures/extensions/density.png)
+
+### 2D MOT as an atom source (`mot/source.py`)
+
+The 2D MOT, now in three dimensions, works as an atom source. Four elongated beams and a 2D
+quadrupole field cool atoms transversely, and a weak push beam along +z sends them through a
+1.5 mm hole into the science chamber. Vapour atoms enter a box around the beams, and those that pass
+the hole slower than 30 m/s count as useful.
+
+- The push beam raises the useful flux about fourfold, to a few 10⁹ atoms/s.
+- It also sets the output speed, close to that of an atom pushed from rest by the mean force (dashed
+  lines).
+
+![2D MOT source](figures/extensions/source.png)
+
+### Sub-Doppler molasses (`mot/molasses.py`)
+
+A real Rb atom has 12 Zeeman sublevels on F=2 → F′=3, and in σ+σ− light it cools far below the
+Doppler limit. Here the optical Bloch equations for all 12 levels are solved in the frame that
+rotates with the polarisation (Dalibard & Cohen-Tannoudji 1989). The steady state gives the force
+F(v) and the scattering rate R(v) at each velocity, and the atoms then move with these and their
+photon noise. The same Monte Carlo as before takes the MOT cloud, switches off the field and
+applies two molasses stages.
+
+- **Force.** A steep sub-Doppler slope sits on top of the broad Doppler force. Its friction does not
+  depend on intensity, and for fast atoms the force reduces to that of the stretched two-level
+  transition.
+- **Temperature.** Cooling from 364 µK to a few µK takes under a millisecond. The cold core matches
+  $k_BT = D(0)/\beta$, which scales as intensity/detuning, as in experiments.
+- **Limits.** The semiclassical model fails within ~10 recoil temperatures, and it leaves out the
+  fluctuations of the dipole force.
+
+![Molasses](figures/extensions/molasses.png)
+
 ## What the model leaves out
 
-These approximations are deliberate. They matter when comparing with an experiment:
+These approximations are deliberate in the main simulation (`main.py`). They matter when comparing
+with an experiment, and the [extensions](#beyond-the-basic-model-extensionspy) lift several of them:
 
 - **Two-level atom.** Sub-Doppler (polarisation-gradient) cooling, which brings real Rb MOTs to
-  tens of µK, is not captured. Optical pumping and the repumper are also not modelled.
+  tens of µK, is not captured (see *Sub-Doppler molasses*). Leakage to F=1 and the repumper are
+  also left out (see *Repumper*).
 - **Rate equations.** Interference between beams and optical coherences are ignored; this is valid
   for times much longer than 1/Γ.
 - **Zeeman shift.** The shift is taken linear along each beam axis, with the effective moment of the
   stretched transition ($\mu' = \mu_B$).
 - **Single atoms.** Light-assisted collisions, re-scattering and shadowing between atoms are
   ignored. These limit the density of real MOTs, so in this model the cloud size does not depend on
-  the atom number.
+  the atom number (see *Many atoms*).
 
 ## Code layout
 
 ```
 main.py                 command-line entry point: run, print summary, make figures
+extensions.py           command-line entry point for the extension studies
 mot/
   constants.py          physical constants and Rb-87 D2 data (Steck)
   parameters.py         MOTParameters: geometry, laser, field, imperfections
@@ -192,5 +304,14 @@ mot/
   studies.py            parameter scans (detuning, imperfections, anti-trap)
   measurement.py        time-of-flight expansion and absorption images
   visualization.py      figures and animations
+  capture.py            capture velocity and loading rate from the vapour
+  repumper.py           leakage to F=1 through F'=2, F'=1 and the repumper
+  density.py            shadowing, rescattering, density limit, light-assisted collisions
+  source.py             2D MOT with a push beam as an atom source
+  molasses.py           σ+σ− molasses from the optical Bloch equations (F=2 → F'=3)
+  extension_figures.py  figures of the extensions
+  fast.py               compiled inner loop (Numba), with a NumPy fallback
+  parallel.py           runs the points of a scan on all CPU cores
 tests/test_physics.py   simulation compared with theory, in 2D and 3D
+tests/test_extensions.py  the extensions compared with theory
 ```

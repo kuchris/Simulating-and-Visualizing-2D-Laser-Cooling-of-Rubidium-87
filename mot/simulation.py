@@ -5,8 +5,9 @@ from dataclasses import dataclass
 import numpy as np
 
 from . import constants as c
+from . import theory
+from .fast import advance
 from .parameters import MOTParameters
-from .physics import photon_kicks, scattering_rates
 
 
 @dataclass(frozen=True)
@@ -60,12 +61,18 @@ def initial_state(s: SimulationSettings, dimensions: int,
     return positions, velocities
 
 
+def doppler_steady_state(p: MOTParameters, n_atoms: int,
+                         rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
+    """Atoms drawn from the steady state predicted by Doppler theory: a Gaussian cloud at T_D."""
+    x = theory.equilibrium_position(p) + rng.normal(0, theory.cloud_sizes(p), (n_atoms, p.dimensions))
+    v = rng.normal(0, np.sqrt(c.K_B * theory.doppler_temperature(p) / c.MASS), (n_atoms, p.dimensions))
+    return x, v
+
+
 def run(p: MOTParameters, s: SimulationSettings = SimulationSettings()) -> SimulationResult:
     """Evolve the atoms with a semi-implicit Euler step: kick v, then drift x."""
     rng = np.random.default_rng(s.seed)
     x, v = initial_state(s, p.dimensions, rng)
-    gravity_kick = p.gravity_vector * s.dt
-
     steps_per_snapshot = max(1, round(s.snapshot_interval / s.dt))
     n_snapshots = max(1, round(s.duration / (steps_per_snapshot * s.dt)))
 
@@ -73,9 +80,7 @@ def run(p: MOTParameters, s: SimulationSettings = SimulationSettings()) -> Simul
     velocities = np.empty_like(positions)
     for i in range(n_snapshots):
         positions[i], velocities[i] = x, v
-        for _ in range(steps_per_snapshot):
-            v += photon_kicks(scattering_rates(x, v, p), s.dt, p, rng) + gravity_kick
-            x += v * s.dt
+        advance(x, v, p, steps_per_snapshot, s.dt, rng)
     positions[-1], velocities[-1] = x, v
 
     times = np.arange(n_snapshots + 1) * steps_per_snapshot * s.dt

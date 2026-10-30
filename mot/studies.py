@@ -1,10 +1,12 @@
 """Parameter scans: many short simulations, each reduced to its steady state."""
 
 from dataclasses import dataclass, replace
+from functools import partial
 
 import numpy as np
 
 from . import theory
+from .parallel import parallel_map
 from .parameters import MOTParameters
 from .simulation import SimulationResult, SimulationSettings, run
 
@@ -38,19 +40,18 @@ class Scan:
     center_error: np.ndarray
 
 
+def _steady_summary(p: MOTParameters, n_atoms: int, seed: int):
+    """Temperature (with error), size and centre (with error) of one steady state."""
+    steady = _settle(p, n_atoms, seed)
+    T, T_err = _mean_and_error(steady.temperature())
+    center, center_err = _mean_and_error(steady.center())
+    return T, T_err, steady.rms_size().mean(axis=0), center, center_err
+
+
 def scan(params: list[MOTParameters], values, n_atoms: int = 500, seed: int = 1) -> Scan:
-    """Steady-state temperature, size and position for each parameter set."""
-    T, T_err, size, center, center_err = [], [], [], [], []
-    for p in params:
-        steady = _settle(p, n_atoms, seed)
-        mean, error = _mean_and_error(steady.temperature())
-        T.append(mean)
-        T_err.append(error)
-        size.append(steady.rms_size().mean(axis=0))
-        mean, error = _mean_and_error(steady.center())
-        center.append(mean)
-        center_err.append(error)
-    return Scan(np.asarray(values, dtype=float), *map(np.array, (T, T_err, size, center, center_err)))
+    """Steady-state temperature, size and position for each parameter set, run in parallel."""
+    rows = parallel_map(partial(_steady_summary, n_atoms=n_atoms, seed=seed), params)
+    return Scan(np.asarray(values, dtype=float), *map(np.array, zip(*rows)))
 
 
 def scan_detuning(base: MOTParameters, detunings, n_atoms: int = 500) -> Scan:
@@ -77,4 +78,5 @@ def anti_trap(base: MOTParameters, duration: float = 6e-3,
     settings = SimulationSettings(n_atoms=n_atoms, duration=duration, snapshot_interval=0.05e-3,
                                   initial_temperature=theory.doppler_temperature(base),
                                   initial_radius=0.2e-3, seed=3)
-    return run(base, settings), run(replace(base, reversed_field=True), settings)
+    normal, reversed_ = parallel_map(partial(run, s=settings), [base, replace(base, reversed_field=True)])
+    return normal, reversed_
