@@ -99,7 +99,7 @@ def scan_detuning(base: MOTParameters, detunings, n_atoms: int = 500, seed: int 
                                       initial_temperature=1e-3, initial_radius=0.3e-3, seed=seed)
         steady = run(p, settings).steady_state()
 
-        # <v²> decorrelates after ~τ/2, so the steady half holds about 2 × T/(τ/2)
+        # <v²> decorrelates after ~τ/2, so the steady half holds about 2 × length/(τ/2)
         # independent temperature readings (x and y).
         samples = steady.temperature()
         n_independent = 2 * (steady.times[-1] - steady.times[0]) / (tau / 2)
